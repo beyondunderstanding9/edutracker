@@ -8,6 +8,7 @@
 // ==========================================
 // 1. DATA STORE (Persistent)
 // ==========================================
+
 const COMMON_SUBJECTS = [
     "Data Structures", "Web Development", "Mathematics IV", "Ethics",
     "Operating Systems", "DBMS", "Computer Networks", "Software Engg",
@@ -15,62 +16,34 @@ const COMMON_SUBJECTS = [
     "Digital Logic", "Theory of Comp", "Compiler Design", "Project Phase I"
 ];
 
-const DEFAULT_DATA = {
-    users: [
-        { email: 'admin@college.edu.in', password: 'admin', name: 'System Admin', role: 'admin', id: 'ADM01', status: 'active' }
-    ],
+// Local State Cache (Syncs with Firebase)
+const STORE = {
+    currentUser: null,
+    users: [], // Admin needs this
     assignments: [],
     placements: [],
-    events: [],
-    notifications: [{ id: 1, text: 'System Initialized', type: 'global', read: false }]
+    notifications: []
 };
 
-function loadData() {
-    const savedV7 = localStorage.getItem('edu_data_v7');
-    if (savedV7) {
-        const data = JSON.parse(savedV7);
-        // Migration V9: Ensure placements have applications array
-        data.placements.forEach(p => {
-            if (!p.applications) p.applications = [];
-        });
-        return data;
+// ==========================================
+// 2. AUTH & FIREBASE INIT
+// ==========================================
+// We listen for auth state changes to trigger the app load
+firebase.auth().onAuthStateChanged(async (user) => {
+    if (user) {
+        console.log("User Logged In:", user.email);
+        await Utils.fetchUserData(user);
+    } else {
+        console.log("No User");
+        STORE.currentUser = null;
+        Auth.init(); // Show login
     }
-
-    const savedV5 = localStorage.getItem('edu_data_v5');
-    if (savedV5) {
-        const data = JSON.parse(savedV5);
-        data.users.forEach(u => {
-            if (u.role === 'student' && !u.grades) u.grades = {};
-        });
-        return data;
-    }
-    return JSON.parse(JSON.stringify(DEFAULT_DATA));
-}
-
-const STORE = loadData();
-let session = JSON.parse(localStorage.getItem('edu_session_v7'));
-if (!session) session = JSON.parse(localStorage.getItem('edu_session_v5'));
-STORE.currentUser = session || null;
+});
 
 function saveData() {
-    const db = {
-        users: STORE.users,
-        assignments: STORE.assignments,
-        placements: STORE.placements,
-        events: STORE.events,
-        notifications: STORE.notifications
-    };
-    localStorage.setItem('edu_data_v7', JSON.stringify(db));
-
-    if (STORE.currentUser) {
-        const freshUser = STORE.users.find(u => u.id === STORE.currentUser.id);
-        if (freshUser) {
-            STORE.currentUser = freshUser;
-            localStorage.setItem('edu_session_v7', JSON.stringify(freshUser));
-        }
-    } else {
-        localStorage.removeItem('edu_session_v7');
-    }
+    // Deprecated for Global Save. Used for specific updates now.
+    // We will update Firestore directly in actions.
+    console.warn("saveData() called - redirecting to firestore updates where possible");
 }
 
 // ==========================================
@@ -136,7 +109,7 @@ const Auth = {
                 <h2 style="color:white; margin-bottom:20px;">${role.toUpperCase()} REGISTER</h2>
                 <form onsubmit="Auth.handleSignup(event)">
                     <input type="text" id="s-name" class="input-field" placeholder="Full Name" required>
-                    <input type="email" id="s-email" class="input-field" placeholder="Email (@college.edu.in)" required>
+                    <input type="email" id="s-email" class="input-field" placeholder="Email" required>
                     <input type="password" id="s-pass" class="input-field" placeholder="Create Password" required>
                     <input type="text" id="s-phone" class="input-field" placeholder="Phone" required>
                     <input type="text" id="s-enroll" class="input-field" placeholder="Enrollment / ID" required>
@@ -148,64 +121,59 @@ const Auth = {
         }
     },
 
-    handleLogin(e) {
+    async handleLogin(e) {
         e.preventDefault();
         const role = document.getElementById('auth-form-wrapper').dataset.role;
         const email = document.getElementById('l-email').value;
         const pass = document.getElementById('l-password').value;
         const err = document.getElementById('auth-error');
 
-        const user = STORE.users.find(u => u.email === email && u.role === role);
-
-        if (!user) { err.innerText = "User not found."; return; }
-        if (user.password !== pass) { err.innerText = "Incorrect Password."; return; }
-        if (user.status === 'pending') { err.innerText = "Account Pending Approval."; return; }
-
-        STORE.currentUser = user;
-        saveData();
-        this.init();
+        try {
+            await firebase.auth().signInWithEmailAndPassword(email, pass);
+            // onAuthStateChanged will handle the rest
+        } catch (error) {
+            err.innerText = error.message;
+        }
     },
 
-    handleSignup(e) {
+    async handleSignup(e) {
         e.preventDefault();
         const role = document.getElementById('auth-form-wrapper').dataset.role;
         const email = document.getElementById('s-email').value;
+        const pass = document.getElementById('s-pass').value;
 
-        if (!email.includes('@college.edu.in') && !email.includes('@college.ac.in')) {
-            alert('Invalid Email Domain.'); return;
+        try {
+            const userCred = await firebase.auth().createUserWithEmailAndPassword(email, pass);
+
+            const newUser = {
+                id: userCred.user.uid,
+                role: role,
+                status: 'active', // Default active for simplicity, or keep 'pending' logic if crucial
+                email: email,
+                name: document.getElementById('s-name').value,
+                details: {
+                    phone: document.getElementById('s-phone').value,
+                    enrollment: document.getElementById('s-enroll').value,
+                    course: document.getElementById('s-course').value
+                },
+                subjects: role === 'student' ? ['Data Structures', 'Web Dev', 'Math IV', 'Ethics'] : [],
+                attendance: role === 'student' ? {
+                    'Data Structures': { present: 0, total: 0 },
+                    'Web Dev': { present: 0, total: 0 },
+                    'Math IV': { present: 0, total: 0 },
+                    'Ethics': { present: 0, total: 0 }
+                } : {},
+                grades: {},
+                dept: role === 'faculty' ? document.getElementById('s-course').value : null,
+                students: role === 'faculty' ? [] : null
+            };
+
+            await firebase.firestore().collection('users').doc(newUser.id).set(newUser);
+            alert("Account Created!");
+            // Auth change will trigger init
+        } catch (error) {
+            alert(error.message);
         }
-        if (STORE.users.find(u => u.email === email)) {
-            alert("Email already exists!"); return;
-        }
-
-        const newUser = {
-            id: role.substring(0, 3).toUpperCase() + Date.now().toString().slice(-4),
-            role: role,
-            status: 'pending',
-            email: email,
-            password: document.getElementById('s-pass').value,
-            name: document.getElementById('s-name').value,
-            details: {
-                phone: document.getElementById('s-phone').value,
-                enrollment: document.getElementById('s-enroll').value,
-                course: document.getElementById('s-course').value
-            },
-            subjects: role === 'student' ? ['Data Structures', 'Web Dev', 'Math IV', 'Ethics'] : [],
-            attendance: role === 'student' ? {
-                'Data Structures': { present: 0, total: 0 },
-                'Web Dev': { present: 0, total: 0 },
-                'Math IV': { present: 0, total: 0 },
-                'Ethics': { present: 0, total: 0 }
-            } : {},
-            grades: {},
-            dept: role === 'faculty' ? document.getElementById('s-course').value : null,
-            students: role === 'faculty' ? [] : null
-        };
-
-        STORE.users.push(newUser);
-        saveData();
-        alert("Account Created! Wait for Admin Approval.");
-        Auth.init();
     },
 
     setupSession() {
@@ -260,9 +228,10 @@ const Auth = {
     },
 
     logout() {
-        STORE.currentUser = null;
-        saveData();
-        location.reload();
+        firebase.auth().signOut().then(() => {
+            STORE.currentUser = null;
+            location.reload();
+        });
     }
 };
 
@@ -488,7 +457,7 @@ const Views = {
             return `
                                         <tr>
                                             <td>${stuName}</td>
-                                            <td><button class="action-btn" style="padding:2px 8px; font-size:10px;" onclick="Utils.viewResume('${app.studentId}')">View PDF</button></td>
+                                            <td><button class="action-btn" style="padding:2px 8px; font-size:10px;" onclick="Utils.viewFile('${app.resume}')">View PDF</button></td>
                                             <td><span class="status-badge status-pending">${app.status}</span></td>
                                             <td style="display:flex; gap:5px;">
                                                 <button class="action-btn" style="background:var(--success-text); color:black;" onclick="Utils.updateAppStatus(${p.id}, '${app.studentId}', 'Selected')">Select</button>
@@ -549,7 +518,14 @@ const Views = {
                                 <tbody>
                                     ${(a.submissions || []).length === 0 ? '<tr><td colspan="3">No submissions.</td></tr>' : (a.submissions || []).map(s => {
                 const stuName = STORE.users.find(x => x.id === s.studentId)?.name || s.studentId;
-                return `<tr><td>${stuName}</td><td>${s.grade || '-'}</td><td><button class="action-btn" onclick="Utils.gradeAssignment(${a.id}, '${s.studentId}')">Grade</button></td></tr>`;
+                return `<tr>
+                    <td>${stuName}</td>
+                    <td>${s.grade || '-'}</td>
+                    <td>
+                        <button class="action-btn" onclick="Utils.gradeAssignment(${a.id}, '${s.studentId}')">Grade</button>
+                        ${s.file ? `<button class="action-btn" onclick="Utils.viewFile('${s.file}')">View File</button>` : ''}
+                    </td>
+                </tr>`;
             }).join('')}
                                 </tbody>
                             </table>
@@ -659,64 +635,143 @@ const Views = {
 // 4. UTILS & CONTROLLERS
 // ==========================================
 const Utils = {
-    approve(id, start) {
-        if (start) {
-            STORE.users.find(x => x.id === id).status = 'active';
-            saveData(); alert('User Activated');
-        } else {
-            STORE.users = STORE.users.filter(x => x.id !== id);
-            saveData(); alert('User Rejected');
+    async fetchUserData(firebaseUser) {
+        try {
+            const doc = await firebase.firestore().collection('users').doc(firebaseUser.uid).get();
+            if (doc.exists) {
+                STORE.currentUser = doc.data();
+
+                // Load Global Data (Simulating the old Monolithic STORE)
+                // In a real app, we would paginate or only load what's needed.
+                const db = firebase.firestore();
+
+                const [usersSnap, assSnap, placeSnap, notifSnap] = await Promise.all([
+                    db.collection('users').get(),
+                    db.collection('assignments').get(),
+                    db.collection('placements').get(),
+                    db.collection('notifications').get()
+                ]);
+
+                STORE.users = usersSnap.docs.map(d => d.data());
+                STORE.assignments = assSnap.docs.map(d => d.data());
+                STORE.placements = placeSnap.docs.map(d => d.data());
+                STORE.notifications = notifSnap.docs.map(d => d.data());
+
+                Auth.init(); // Re-render
+            } else {
+                console.error("User doc not found in Firestore");
+                alert("User profile not found. Contact Admin.");
+                firebase.auth().signOut();
+            }
+        } catch (e) {
+            console.error("Error fetching data:", e);
+            alert("Network Error: " + e.message);
         }
-        Router.route();
     },
 
-    linkFaculty(facId) {
+    async approve(id, start) {
+        try {
+            const status = start ? 'active' : 'rejected';
+            await firebase.firestore().collection('users').doc(id).update({ status: status });
+            // Update local store to reflect change immediately without waiting for reload
+            const u = STORE.users.find(x => x.id === id);
+            if (u) u.status = status;
+            alert('User ' + status);
+            Router.route();
+        } catch (e) { console.error(e); alert('Error: ' + e.message); }
+    },
+
+    async linkFaculty(facId) {
         if (!facId) return;
         const student = STORE.currentUser;
-        student.facultyId = facId;
-        const fac = STORE.users.find(x => x.id === facId);
-        if (fac) {
-            if (!fac.students) fac.students = [];
-            if (!fac.students.includes(student.id)) fac.students.push(student.id);
-        }
-        saveData();
-        alert('Faculty Linked!');
-        Router.route();
+        try {
+            const batch = firebase.firestore().batch();
+            const stuRef = firebase.firestore().collection('users').doc(student.id);
+            const facRef = firebase.firestore().collection('users').doc(facId);
+
+            batch.update(stuRef, { facultyId: facId });
+            batch.update(facRef, { students: firebase.firestore.FieldValue.arrayUnion(student.id) });
+
+            await batch.commit();
+
+            // Local update
+            student.facultyId = facId;
+            const fac = STORE.users.find(x => x.id === facId);
+            if (fac) {
+                if (!fac.students) fac.students = [];
+                if (!fac.students.includes(student.id)) fac.students.push(student.id);
+            }
+            alert('Faculty Linked!');
+            Router.route();
+        } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
-    saveProfile() {
+    async saveProfile() {
         const u = STORE.currentUser;
-        u.name = document.getElementById('p-name').value;
-        if (!u.details) u.details = {};
-        u.details.phone = document.getElementById('p-phone').value;
-        const dbUser = STORE.users.find(x => x.id === u.id);
-        if (dbUser) { dbUser.name = u.name; dbUser.details = u.details; }
-        saveData();
-        alert('Profile Saved!');
+        const newName = document.getElementById('p-name').value;
+        const newPhone = document.getElementById('p-phone').value;
+
+        try {
+            await firebase.firestore().collection('users').doc(u.id).update({
+                name: newName,
+                'details.phone': newPhone
+            });
+            u.name = newName;
+            u.details.phone = newPhone;
+            alert('Profile Saved!');
+        } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
-    createAssignment() {
+    async createAssignment() {
         const t = prompt("Assignment Title:");
         if (t) {
-            STORE.assignments.push({ id: Date.now(), title: t, deadline: '2024-12-30', submissions: [] });
-            saveData(); Router.route();
+            const newAss = { id: Date.now().toString(), title: t, deadline: '2024-12-30', submissions: [] };
+            try {
+                await firebase.firestore().collection('assignments').doc(newAss.id).set(newAss);
+                STORE.assignments.push(newAss);
+                Router.route();
+            } catch (e) { console.error(e); alert('Error: ' + e.message); }
         }
     },
 
-    submitAssignment(e, assId) {
+    async submitAssignment(e, assId) {
         e.preventDefault();
-        const ass = STORE.assignments.find(a => a.id === assId);
-        if (ass) {
-            if (!ass.submissions) ass.submissions = [];
-            ass.submissions.push({
+        // File Upload Logic
+        const fileInput = e.target.querySelector('input[type="file"]');
+        const file = fileInput ? fileInput.files[0] : null;
+        if (!file) return alert("Please select a file.");
+
+        try {
+            alert("Uploading...");
+            const storageRef = firebase.storage().ref();
+            const fileRef = storageRef.child(`assignments/${assId}/${STORE.currentUser.id}_${file.name}`);
+            await fileRef.put(file);
+            const url = await fileRef.getDownloadURL();
+
+            const sub = {
                 studentId: STORE.currentUser.id,
-                file: 'mock.pdf',
+                file: url, // Store URL
+                fileName: file.name,
                 grade: null
+            };
+
+            const assRef = firebase.firestore().collection('assignments').doc(String(assId));
+            // We use arrayRemove to avoid duplicates if re-submitting, then arrayUnion
+            // Note: In real app, we'd handle re-submissions better.
+            await assRef.update({
+                submissions: firebase.firestore.FieldValue.arrayUnion(sub)
             });
-            saveData();
+
+            // Update local
+            const ass = STORE.assignments.find(a => String(a.id) === String(assId));
+            if (ass) {
+                if (!ass.submissions) ass.submissions = [];
+                ass.submissions.push(sub);
+            }
+
             alert('Submitted Successfully!');
             Router.route();
-        }
+        } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
     gradeAssignment(assId, stuId) {
@@ -772,32 +827,56 @@ const Utils = {
         alert("Grade Assigned!");
     },
 
-    addPlacement() {
+    async addPlacement() {
         const c = prompt("Company Name:");
         const r = prompt("Job Role:");
         const sal = prompt("CTC (e.g. 10 LPA):");
         if (c && r && sal) {
-            STORE.placements.push({
-                id: Date.now(), company: c, role: r, ctc: sal, status: 'Open', applications: []
-            });
-            saveData(); Router.route();
+            const newP = {
+                id: Date.now().toString(), company: c, role: r, ctc: sal, status: 'Open', applications: []
+            };
+            try {
+                await firebase.firestore().collection('placements').doc(newP.id).set(newP);
+                STORE.placements.push(newP);
+                Router.route();
+            } catch (e) { console.error(e); alert('Error: ' + e.message); }
         }
     },
 
-    applyPlacement(e, pid) {
+    async applyPlacement(e, pid) {
         e.preventDefault();
-        const p = STORE.placements.find(x => x.id === pid);
-        if (p) {
-            if (!p.applications) p.applications = [];
-            p.applications.push({
+        const fileInput = document.getElementById('resume-' + pid);
+        const file = fileInput ? fileInput.files[0] : null;
+        if (!file) return alert("Please select a resume.");
+
+        try {
+            alert("Uploading Resume...");
+            const storageRef = firebase.storage().ref();
+            const fileRef = storageRef.child(`resumes/${pid}/${STORE.currentUser.id}_${file.name}`);
+            await fileRef.put(file);
+            const url = await fileRef.getDownloadURL();
+
+            const app = {
                 studentId: STORE.currentUser.id,
-                resume: 'resume_mock.pdf',
+                resume: url,
                 status: 'Applied'
+            };
+
+            const pRef = firebase.firestore().collection('placements').doc(String(pid));
+            await pRef.update({
+                applications: firebase.firestore.FieldValue.arrayUnion(app)
             });
-            saveData();
+
+            // Update local
+            const p = STORE.placements.find(x => String(x.id) === String(pid));
+            if (p) {
+                if (!p.applications) p.applications = [];
+                p.applications.push(app);
+            }
+
             alert("Application Submitted with Resume!");
             Router.route();
-        }
+        } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
     updateAppStatus(pid, sid, status) {
@@ -812,8 +891,17 @@ const Utils = {
     },
 
     viewResume(sid) {
+        // Find URL from applications? The view only passed SID.
+        // We'd need to find the specific application context, or just look up user?
+        // Ideally we pass the URL directly in the onClick.
+        // For now, let's just alert.
         const u = STORE.users.find(x => x.id === sid);
-        alert(`Opening Resume for ${u ? u.name : sid}... \n(Simulation: Opening PDF Viewer)`);
+        alert("To view resume, we need the URL. (Update View to pass URL)");
+    },
+
+    viewFile(url) {
+        if (url && url.startsWith('http')) window.open(url, '_blank');
+        else alert("No valid file linked.");
     },
 
     postNews() {
@@ -823,6 +911,46 @@ const Utils = {
             saveData();
             alert('Posted'); document.getElementById('news-in').value = ''; Router.route();
         }
+    },
+
+    async markAttendanceForDay(date) {
+        const u = STORE.currentUser;
+        if (u.role !== 'student') return alert("Only students can mark attendance.");
+        if (u.lastAttendanceDate === date) return alert("Attendance already marked for today!");
+
+        try {
+            const batch = firebase.firestore().batch();
+            const userRef = firebase.firestore().collection('users').doc(u.id);
+
+            // Update all enrolled subjects
+            const updates = {};
+            // We increment counters. 
+            // Note: Firestore update with nested fields needs "attendance.Subject.present" syntax
+            // OR we read, modify, write.
+            // Since we have the user doc loaded, we can construct the update.
+
+            if (!u.attendance) u.attendance = {};
+            const subjects = u.subjects || [];
+
+            subjects.forEach(sub => {
+                if (!u.attendance[sub]) u.attendance[sub] = { present: 0, total: 0 };
+                u.attendance[sub].present += 1;
+                u.attendance[sub].total += 1;
+                updates[`attendance.${sub}.present`] = firebase.firestore.FieldValue.increment(1);
+                updates[`attendance.${sub}.total`] = firebase.firestore.FieldValue.increment(1);
+            });
+
+            updates['lastAttendanceDate'] = date;
+
+            await userRef.update(updates);
+
+            // Local update (STORE already mutated above somewhat, but let's be safe)
+            u.lastAttendanceDate = date;
+
+            alert(`Attendance Marked for ${subjects.length} subjects!`);
+            Router.route();
+
+        } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
     genResume() {
@@ -844,17 +972,18 @@ const QR = {
         m.querySelector('#modal-content').innerHTML = `
             <h2 style="text-align:center; color:white;">Attendance QR</h2>
             <div id="qrcode-target" style="background:white; padding:20px; margin:20px auto; width: fit-content; border-radius:10px;"></div>
-            <p style="text-align:center;">Refresh in <span id="qr-time">30</span>s</p>
+            <p style="text-align:center;">Updates daily. Scan to mark all today's subjects.</p>
         `;
         this.gen();
-        this.timer = setInterval(() => this.gen(), 30000);
     },
 
     gen() {
         const el = document.getElementById('qrcode-target');
         if (el) {
             el.innerHTML = '';
-            new QRCode(el, { text: 'ATTENDANCE_' + Date.now(), width: 200, height: 200 });
+            // Generate for TODAY
+            const today = new Date().toISOString().split('T')[0];
+            new QRCode(el, { text: 'ATTENDANCE_SESSION_' + today, width: 200, height: 200 });
         }
     },
 
@@ -870,20 +999,20 @@ const QR = {
         setTimeout(() => {
             if (!this.scanner) {
                 if (typeof Html5QrcodeScanner === 'undefined') {
-                    document.getElementById('scan-status').innerHTML = 'Error: Scanner Lib not loaded. <br> <button onclick="Utils.updateAttendance(1); alert(\'Simulated!\')">Simulate Scan</button>';
+                    document.getElementById('scan-status').innerHTML = 'Error: Scanner Lib not loaded.';
                     return;
                 }
                 this.scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 });
                 this.scanner.render((txt) => {
-                    this.scanner.clear();
-                    m.style.display = 'none';
-                    alert(`Success! Scanned: ${txt}`);
-                    const u = STORE.currentUser;
-                    if (!u.attendance['Web Dev']) u.attendance['Web Dev'] = { present: 0, total: 0 };
-                    u.attendance['Web Dev'].present++;
-                    u.attendance['Web Dev'].total++;
-                    saveData();
-                    Router.route();
+                    if (txt.startsWith('ATTENDANCE_SESSION_')) {
+                        this.scanner.clear();
+                        m.style.display = 'none';
+                        const date = txt.split('ATTENDANCE_SESSION_')[1];
+                        alert(`QR Validated for Date: ${date}`);
+                        Utils.markAttendanceForDay(date);
+                    } else {
+                        alert("Invalid QR Code");
+                    }
                 }, (err) => { /* Ignore */ });
             }
         }, 500);
