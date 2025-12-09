@@ -55,6 +55,7 @@ const Auth = {
         if (m) m.style.display = 'none';
 
         if (!STORE.currentUser) {
+            this.seedAdmin(); // Try enabling admin on every load just in case
             this.renderLanding();
             document.getElementById('auth-view').style.display = 'flex';
             document.getElementById('app').style.display = 'none';
@@ -99,7 +100,7 @@ const Auth = {
                     <input type="email" id="l-email" class="input-field" placeholder="Email" required>
                     <input type="password" id="l-password" class="input-field" placeholder="Password" required>
                     <button type="submit" class="btn-primary">Login</button>
-                    <button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'signup')">Create Account</button>
+                    ${role !== 'admin' ? `<button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'signup')">Request Access</button>` : ''}
                     <button type="button" class="btn-text" onclick="Auth.init()">Back</button>
                     <div id="auth-error" style="color:var(--danger-text); margin-top:10px;"></div>
                 </form>
@@ -129,10 +130,53 @@ const Auth = {
         const err = document.getElementById('auth-error');
 
         try {
-            await firebase.auth().signInWithEmailAndPassword(email, pass);
+            const result = await firebase.auth().signInWithEmailAndPassword(email, pass);
+            // Check Status explicitly from Firestore
+            const uid = result.user.uid;
+            const doc = await firebase.firestore().collection('users').doc(uid).get();
+            if (doc.exists) {
+                const data = doc.data();
+                if (data.status !== 'active') {
+                    await firebase.auth().signOut();
+                    err.innerText = "Account Pending Approval.";
+                    return;
+                }
+                if (data.role !== role) {
+                    await firebase.auth().signOut();
+                    err.innerText = `Invalid Role. You are a ${data.role}.`;
+                    return;
+                }
+            } else {
+                // Edge case: Auth exists but DB doc missing (e.g. legacy data issue)
+                // For Admin, we might auto-fix, but better to fail safe
+            }
             // onAuthStateChanged will handle the rest
         } catch (error) {
-            err.innerText = error.message;
+            console.log("Login Error Code:", error.code);
+            if (error.code === 'auth/user-not-found' && email === 'admin@college.edu.in') {
+                // AUTO-SEED ADMIN
+                if (confirm("Admin account not found. Create it now with password 'admin123'?")) {
+                    try {
+                        const adminCred = await firebase.auth().createUserWithEmailAndPassword('admin@college.edu.in', 'admin123');
+                        const adminUser = {
+                            id: adminCred.user.uid,
+                            role: 'admin',
+                            status: 'active',
+                            email: 'admin@college.edu.in',
+                            name: 'System Admin',
+                        };
+                        await firebase.firestore().collection('users').doc(adminCred.user.uid).set(adminUser);
+                        alert("Admin Accepted Created! Logging in...");
+                        // Auth listener will catch the login
+                    } catch (err2) {
+                        err.innerText = "Creation Error: " + err2.message;
+                    }
+                } else {
+                    err.innerText = "Admin account does not exist.";
+                }
+            } else {
+                err.innerText = error.message;
+            }
         }
     },
 
@@ -148,7 +192,7 @@ const Auth = {
             const newUser = {
                 id: userCred.user.uid,
                 role: role,
-                status: 'active', // Default active for simplicity, or keep 'pending' logic if crucial
+                status: 'pending', // FORCE PENDING
                 email: email,
                 name: document.getElementById('s-name').value,
                 details: {
@@ -622,6 +666,7 @@ const Views = {
                     <div><label>Name</label><input class="input-field" value="${u.name}" id="p-name"></div>
                     <div><label>Phone</label><input class="input-field" value="${u.details?.phone || ''}" id="p-phone"></div>
                     <div><label>Email</label><input class="input-field" value="${u.email}" disabled style="opacity:0.5"></div>
+                    <div><label>New Password</label><input class="input-field" type="password" placeholder="Leave empty to keep current" id="p-pass"></div>
                 </div>
                 <div style="margin-top:20px; display:flex; gap:10px;">
                     <button class="btn-primary" style="width:auto;" onclick="Utils.saveProfile()">Save Changes</button>
@@ -710,6 +755,7 @@ const Utils = {
         const u = STORE.currentUser;
         const newName = document.getElementById('p-name').value;
         const newPhone = document.getElementById('p-phone').value;
+        const newPass = document.getElementById('p-pass').value;
 
         try {
             await firebase.firestore().collection('users').doc(u.id).update({
@@ -718,7 +764,16 @@ const Utils = {
             });
             u.name = newName;
             u.details.phone = newPhone;
-            alert('Profile Saved!');
+
+            if (newPass && newPass.length >= 6) {
+                const user = firebase.auth().currentUser;
+                await user.updatePassword(newPass);
+                alert('Profile & Password Saved!');
+            } else if (newPass) {
+                alert('Profile Saved, but Password must be 6+ chars.');
+            } else {
+                alert('Profile Saved!');
+            }
         } catch (e) { console.error(e); alert('Error: ' + e.message); }
     },
 
