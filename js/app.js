@@ -99,7 +99,7 @@ const Auth = {
                     <input type="email" id="l-email" class="input-field" placeholder="Email" required>
                     <input type="password" id="l-password" class="input-field" placeholder="Password" required>
                     <button type="submit" class="btn-primary">Login</button>
-                    ${role !== 'admin' ? `<button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'signup')">Create Account</button>` : ''}
+                    <button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'signup')">Create Account</button>
                     <button type="button" class="btn-text" onclick="Auth.init()">Back</button>
                     <div id="auth-error" style="color:var(--danger-text); margin-top:10px;"></div>
                 </form>
