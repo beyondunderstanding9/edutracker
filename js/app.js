@@ -28,17 +28,26 @@ const STORE = {
 // ==========================================
 // 2. AUTH & FIREBASE INIT
 // ==========================================
-// We listen for auth state changes to trigger the app load
-firebase.auth().onAuthStateChanged(async (user) => {
-    if (user) {
-        console.log("User Logged In:", user.email);
-        await Utils.fetchUserData(user);
-    } else {
-        console.log("No User");
-        STORE.currentUser = null;
-        Auth.init(); // Show login
-    }
-});
+// Check if Firebase is loaded
+if (typeof firebase !== 'undefined') {
+    firebase.auth().onAuthStateChanged(async (user) => {
+        if (user) {
+            console.log("User Logged In:", user.email);
+            // Ensure Utils is available (it is defined later in file, but due to hoisting/event loop it should be fine if called async)
+            // However, Utils is const, not hoisted. But this callback runs later, so Utils is defined.
+            if (typeof Utils !== 'undefined') {
+                await Utils.fetchUserData(user);
+            }
+        } else {
+            console.log("No User");
+            STORE.currentUser = null;
+            if (typeof Auth !== 'undefined') Auth.init();
+        }
+    });
+} else {
+    console.error("Firebase SDK not loaded");
+    alert("Error: Firebase SDK not loaded. Check internet connection.");
+}
 
 function saveData() {
     // Deprecated for Global Save. Used for specific updates now.
