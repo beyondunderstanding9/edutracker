@@ -54,6 +54,12 @@ const Auth = {
         const m = document.getElementById('reusable-modal');
         if (m) m.style.display = 'none';
 
+        if (firebase.auth().currentUser === undefined) {
+            // Auth not yet initialized (waiting for firebase)
+            document.getElementById('auth-view').innerHTML = '<div class="loader"></div>';
+            return;
+        }
+
         if (!STORE.currentUser) {
             this.seedAdmin(); // Try enabling admin on every load just in case
             this.renderLanding();
@@ -100,7 +106,7 @@ const Auth = {
                     <input type="email" id="l-email" class="input-field" placeholder="Email" required>
                     <input type="password" id="l-password" class="input-field" placeholder="Password" required>
                     <button type="submit" class="btn-primary">Login</button>
-                    ${role !== 'admin' ? `<button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'signup')">Request Access</button>` : ''}
+                    ${role === 'admin' ? '' : `<button type="button" class="btn-text" onclick="Auth.showForm('${role}', 'signup')">Request Access</button>`}
                     <button type="button" class="btn-text" onclick="Auth.init()">Back</button>
                     <div id="auth-error" style="color:var(--danger-text); margin-top:10px;"></div>
                 </form>
@@ -213,8 +219,11 @@ const Auth = {
             };
 
             await firebase.firestore().collection('users').doc(newUser.id).set(newUser);
-            alert("Account Created!");
-            // Auth change will trigger init
+
+            // CRITICAL FIX: Sign out immediately so they don't auto-login
+            await firebase.auth().signOut();
+            alert("Account Created! You must wait for Admin Approval before logging in.");
+            Auth.init();
         } catch (error) {
             alert(error.message);
         }
